@@ -3,7 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
-
+use App\Models\Adjunto;
 class Mensaje extends Model
 {
     protected $table = 'mensajes';
@@ -26,5 +26,11 @@ class Mensaje extends Model
     public function usuario()
     {
         return $this->belongsTo(Usuario::class, 'ID_usuario', 'ID_usuario');
+    }
+
+    // ¡NUEVA RELACIÓN! Un mensaje puede tener varios archivos adjuntos
+    public function adjuntos()
+    {
+        return $this->hasMany(Adjunto::class, 'ID_mensaje', 'ID_mensaje');
     }
 }

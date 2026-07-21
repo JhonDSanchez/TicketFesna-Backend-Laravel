@@ -7,6 +7,7 @@ use App\Models\Area;
 use App\Models\Mensaje;
 use App\Models\Ticket;
 use App\Models\Usuario;
+use App\Models\Adjunto; // <-- Añadido para poder usar la tabla de adjuntos
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -85,12 +86,20 @@ class TicketController extends Controller
 
     public function store(Request $request)
     {
+        // 1. Limpiamos los strings "USR-001" y "DEP-001" para dejar solo los números enteros
+        $request->merge([
+            'userId' => (int) preg_replace('/\D+/', '', $request->input('userId', '0')),
+            'areaId' => (int) preg_replace('/\D+/', '', $request->input('areaId', '0')),
+        ]);
+
+        // 2. Modificado: Ahora la validación permite archivos
         $data = $request->validate([
             'userId' => ['required', 'integer'],
             'areaId' => ['required', 'integer'],
             'title' => ['required', 'string', 'max:255'],
             'description' => ['nullable', 'string'],
             'priority' => ['nullable', 'in:Baja,Media,Alta,Crítica,Urgente'],
+            'archivos.*' => ['nullable', 'file', 'max:10240'] // <-- NUEVO: Permite adjuntos
         ]);
 
         /** @var Usuario $actor */
@@ -102,7 +111,7 @@ class TicketController extends Controller
             : 'Media';
 
         /** @var Ticket $ticket */
-        $ticket = DB::transaction(function () use ($data, $actor, $priority) {
+        $ticket = DB::transaction(function () use ($request, $data, $actor, $priority) {
             $ticket = Ticket::query()->create([
                 'ID_usuario_solicitante' => (int) $actor->ID_usuario,
                 'ID_usuario_responsable' => null,
@@ -123,6 +132,28 @@ class TicketController extends Controller
                 oldValue: null,
                 newValue: 'Nuevo'
             );
+
+            // NUEVO: Si llegan archivos desde la IA, creamos un mensaje inicial para adjuntarlos
+            if ($request->hasFile('archivos')) {
+                $mensaje = Mensaje::create([
+                    'ID_ticket' => $ticket->ID_ticket,
+                    'ID_usuario' => $actor->ID_usuario,
+                    'contenido' => 'Archivos adjuntos y contexto enviados mediante NOVA (IA)',
+                    'fecha_hora' => now(),
+                ]);
+
+                foreach ($request->file('archivos') as $archivo) {
+                    $ruta = $archivo->store('adjuntos_tickets', 'public');
+                    
+                    Adjunto::create([
+                        'ID_mensaje' => $mensaje->ID_mensaje,
+                        'nombre_archivo' => $archivo->getClientOriginalName(),
+                        'ruta_archivo' => $ruta,
+                        'tipo_archivo' => $archivo->getClientMimeType(),
+                        'tamaño' => $archivo->getSize(),
+                    ]);
+                }
+            }
 
             return $ticket;
         });
@@ -264,7 +295,6 @@ class TicketController extends Controller
                 );
             }
 
-            // La prioridad ya no forma parte del historial; se actualiza sin registrar log.
             if ($priorityChanged) {
                 $ticket->prioridad = $newDbPriority;
             }
@@ -282,7 +312,7 @@ class TicketController extends Controller
         $this->autoCloseResolvedIfExpired($ticket);
 
         $messages = Mensaje::query()
-            ->with('usuario')
+            ->with(['usuario', 'adjuntos']) 
             ->where('ID_ticket', $ticket->ID_ticket)
             ->orderBy('fecha_hora')
             ->orderBy('ID_mensaje')
@@ -291,6 +321,13 @@ class TicketController extends Controller
         $messageTimeline = $messages->map(function (Mensaje $message) {
             $senderRole = (string) ($message->usuario?->rol ?? 'Estudiante');
             $isAgent = in_array($senderRole, ['Funcionario', 'Administrador'], true);
+
+            $attachments = $message->adjuntos->map(function ($adj) {
+                return [
+                    'name' => $adj->nombre_archivo,
+                    'url' => url('storage/' . $adj->ruta_archivo) 
+                ];
+            })->toArray();
 
             return [
                 'id' => 'msg-' . (string) $message->ID_mensaje,
@@ -302,6 +339,7 @@ class TicketController extends Controller
                 'content' => $message->contenido,
                 'timestamp' => $message->fecha_hora,
                 'agentName' => $isAgent ? ($message->usuario?->nombre_completo ?? 'Agente de Soporte') : null,
+                'attachments' => empty($attachments) ? null : $attachments,
                 '_sortKey' => 'msg-' . str_pad((string) $message->ID_mensaje, 12, '0', STR_PAD_LEFT),
             ];
         })->values()->all();
