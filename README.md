@@ -147,3 +147,5 @@ Backend en desarrollo activo, operativo para autenticacion, tickets, mensajes, b
 ## Licencia
 
 Uso academico/institucional interno.
+
+🧀
