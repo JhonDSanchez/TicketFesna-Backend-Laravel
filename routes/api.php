@@ -1,5 +1,5 @@
 <?php
-
+use App\Http\Controllers\Api\MensajeController;
 use App\Http\Controllers\Api\AreaController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\DashboardController;
@@ -31,3 +31,4 @@ Route::post('/users/{id}/reset-password', [UsuarioController::class, 'resetPassw
 Route::get('/areas', [AreaController::class, 'index']);
 Route::post('/login', [AuthController::class, 'login']);
 Route::post('/change-password', [AuthController::class, 'changePassword']);
+Route::post('/mensajes/enviar', [MensajeController::class, 'enviarMensaje']);
