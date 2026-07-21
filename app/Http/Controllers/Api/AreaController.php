@@ -22,7 +22,7 @@ class AreaController extends Controller
             'head' => 'Sin definir',
             'staff' => $area->usuarios->count(),
             'openTickets' => Ticket::query()->where('ID_area', $area->ID_area)->count(),
-            'email' => 'contacto@empresa.test',
+            'email' => $area->correo_area,
         ]));
     }
 }

@@ -20,4 +20,19 @@ class Area extends Model
     {
         return $this->hasMany(Usuario::class, 'ID_area', 'ID_area');
     }
+
+    public function getCorreoAreaAttribute(): string
+    {
+        return match ((string) $this->nombre_area) {
+            'Relación con el sector externo' => 'sectorexterno@nuevaamerica.edu.co',
+            'Lideres de programa' => 'lideres.programa@nuevaamerica.edu.co',
+            'Bienestar institucional' => 'bienestar@nuevaamerica.edu.co',
+            'Académico' => 'academico@nuevaamerica.edu.co',
+            'Promoción institucional' => 'promocion@nuevaamerica.edu.co',
+            'Atención al estudiante' => 'atencion.estudiante@nuevaamerica.edu.co',
+            'Tesoreria' => 'tesoreria@nuevaamerica.edu.co',
+            'Sistemas' => 'sistemas@nuevaamerica.edu.co',
+            default => 'contacto@nuevaamerica.edu.co',
+        };
+    }
 }
