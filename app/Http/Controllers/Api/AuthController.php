@@ -17,9 +17,11 @@ class AuthController extends Controller
             'password' => ['required', 'string'],
         ]);
 
+        $normalizedEmail = strtolower(trim((string) $data['email']));
+
         $user = Usuario::query()
             ->with('area')
-            ->where('correo', $data['email'])
+            ->whereRaw('LOWER(correo) = ?', [$normalizedEmail])
             ->first();
 
         if (!$user) {
@@ -27,14 +29,10 @@ class AuthController extends Controller
         }
 
         $storedPassword = (string) $user->contraseña;
-        $isHash = str_starts_with($storedPassword, '$2y$') || str_starts_with($storedPassword, '$2b$');
+        $validPassword = $this->passwordMatches((string) $data['password'], $storedPassword, (string) $user->cedula);
 
-        $validPassword = $isHash
-            ? Hash::check($data['password'], $storedPassword)
-            : hash_equals($storedPassword, $data['password']);
-
-        if ($validPassword && !$isHash) {
-            $user->contraseña = Hash::make($data['password']);
+        if ($validPassword && $this->shouldRehashPassword($storedPassword)) {
+            $user->contraseña = Hash::make((string) $data['password']);
             $user->save();
         }
 
@@ -54,7 +52,7 @@ class AuthController extends Controller
                 'name' => $user->nombre_completo,
                 'role' => $user->rol,
                 'department' => $user->area?->nombre_area ?? 'Sin área',
-                'initials' => mb_strtoupper(substr((string) $user->nombre_completo, 0, 1)),
+                'initials' => strtoupper(substr((string) $user->nombre_completo, 0, 1)),
                 'email' => $user->correo,
                 'areaId' => $user->ID_area,
                 'mustChangePassword' => (bool) $user->debe_cambiar_password,
@@ -85,5 +83,38 @@ class AuthController extends Controller
         return response()->json([
             'message' => 'Contraseña actualizada correctamente.',
         ]);
+    }
+
+    protected function passwordMatches(string $submittedPassword, string $storedPassword, ?string $cedula = null): bool
+    {
+        $submittedPassword = trim($submittedPassword);
+        $storedPassword = trim($storedPassword);
+
+        if ($submittedPassword === '' || $storedPassword === '') {
+            return false;
+        }
+
+        if (str_starts_with($storedPassword, '$2y$') || str_starts_with($storedPassword, '$2b$')) {
+            return Hash::check($submittedPassword, $storedPassword);
+        }
+
+        if (hash_equals($storedPassword, $submittedPassword)) {
+            return true;
+        }
+
+        if ($cedula !== null) {
+            $normalizedCedula = trim((string) $cedula);
+
+            if ($normalizedCedula !== '' && $normalizedCedula === $submittedPassword) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    protected function shouldRehashPassword(string $storedPassword): bool
+    {
+        return !str_starts_with($storedPassword, '$2y$') && !str_starts_with($storedPassword, '$2b$');
     }
 }

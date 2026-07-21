@@ -121,7 +121,7 @@ class UsuarioController extends Controller
             'actorRole' => ['required', 'string'],
         ]);
 
-        if (mb_strtolower(trim($data['actorRole'])) !== 'administrador') {
+        if (strtolower(trim($data['actorRole'])) !== 'administrador') {
             return response()->json(['message' => 'Solo los administradores pueden restablecer contraseña.'], 403);
         }
 

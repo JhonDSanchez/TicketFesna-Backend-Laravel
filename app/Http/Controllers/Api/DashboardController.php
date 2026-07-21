@@ -22,7 +22,7 @@ class DashboardController extends Controller
                 'name' => $firstUser->nombre_completo,
                 'role' => $firstUser->rol,
                 'department' => $firstUser->area?->nombre_area ?? 'Sin área',
-                'initials' => mb_strtoupper(substr($firstUser->nombre_completo, 0, 1)),
+                'initials' => strtoupper(substr($firstUser->nombre_completo, 0, 1)),
                 'id' => 'USR-' . str_pad((string) $firstUser->ID_usuario, 3, '0', STR_PAD_LEFT),
             ] : null,
             'tickets' => $tickets->map(function ($ticket) {
@@ -57,7 +57,7 @@ class DashboardController extends Controller
                     'head' => 'Sin definir',
                     'staff' => $users->where('ID_area', $area->ID_area)->count(),
                     'openTickets' => Ticket::where('ID_area', $area->ID_area)->count(),
-                    'email' => 'contacto@empresa.test',
+                    'email' => $area->correo_area,
                 ];
             }),
         ]);
@@ -77,7 +77,9 @@ class DashboardController extends Controller
 
     private function mapPriority(?string $priority): string
     {
-        return match ($priority) {
+        $normalizedPriority = is_string($priority) ? trim($priority) : null;
+
+        return match ($normalizedPriority) {
             'Alta', 'Urgente' => 'high',
             'Media' => 'medium',
             'Baja' => 'low',
