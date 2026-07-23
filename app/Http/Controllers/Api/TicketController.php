@@ -11,6 +11,7 @@ use App\Models\Adjunto; // <-- Añadido para poder usar la tabla de adjuntos
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 
 class TicketController extends Controller
 {
@@ -138,7 +139,7 @@ class TicketController extends Controller
                 $mensaje = Mensaje::create([
                     'ID_ticket' => $ticket->ID_ticket,
                     'ID_usuario' => $actor->ID_usuario,
-                    'contenido' => 'Archivos adjuntos y contexto enviados mediante NOVA (IA)',
+                    'contenido' => 'Archivos adjuntos y contexto enviados mediante Botpress (IA)',
                     'fecha_hora' => now(),
                 ]);
 
@@ -324,8 +325,10 @@ class TicketController extends Controller
 
             $attachments = $message->adjuntos->map(function ($adj) {
                 return [
+                    'id' => (int) $adj->ID_adjunto,
                     'name' => $adj->nombre_archivo,
-                    'url' => url('storage/' . $adj->ruta_archivo) 
+                    'url' => url('storage/' . $adj->ruta_archivo),
+                    'downloadUrl' => url('/api/attachments/' . $adj->ID_adjunto . '/download'),
                 ];
             })->toArray();
 
@@ -420,12 +423,33 @@ class TicketController extends Controller
         return response()->json($timeline);
     }
 
+    public function downloadAttachment(string $attachmentId)
+    {
+        $id = (int) preg_replace('/\D+/', '', $attachmentId);
+        $attachment = Adjunto::query()->findOrFail($id);
+
+        $disk = Storage::disk('public');
+        if (!$disk->exists($attachment->ruta_archivo)) {
+            return response()->json(['message' => 'El archivo adjunto no existe.'], 404);
+        }
+
+        return $disk->download($attachment->ruta_archivo, $attachment->nombre_archivo);
+    }
+
     public function storeMessage(Request $request, string $ticketId)
     {
         $data = $request->validate([
             'userId' => ['required', 'integer'],
-            'content' => ['required', 'string'],
+            'content' => ['nullable', 'string'],
+            'archivos' => ['nullable', 'array'],
+            'archivos.*' => ['file', 'max:10240'],
         ]);
+
+        $content = trim((string) ($data['content'] ?? ''));
+        $hasAttachments = $request->hasFile('archivos');
+        if ($content === '' && !$hasAttachments) {
+            return response()->json(['message' => 'Escribe un mensaje o adjunta al menos un archivo.'], 422);
+        }
 
         $id = (int) preg_replace('/\D+/', '', $ticketId);
         $ticket = Ticket::query()->findOrFail($id);
@@ -447,9 +471,29 @@ class TicketController extends Controller
         $message = Mensaje::query()->create([
             'ID_ticket' => $ticket->ID_ticket,
             'ID_usuario' => (int) $data['userId'],
-            'contenido' => $data['content'],
+            'contenido' => $content !== '' ? $content : 'Archivo(s) adjunto(s)',
             'fecha_hora' => now(),
         ]);
+
+        $attachments = [];
+        if ($hasAttachments) {
+            foreach ((array) $request->file('archivos') as $archivo) {
+                $ruta = $archivo->store('adjuntos_tickets', 'public');
+
+                $adjunto = Adjunto::query()->create([
+                    'ID_mensaje' => $message->ID_mensaje,
+                    'nombre_archivo' => $archivo->getClientOriginalName(),
+                    'ruta_archivo' => $ruta,
+                    'tipo_archivo' => $archivo->getClientMimeType(),
+                    'tamaño' => $archivo->getSize(),
+                ]);
+
+                $attachments[] = [
+                    'name' => (string) $adjunto->nombre_archivo,
+                    'url' => url('storage/' . $adjunto->ruta_archivo),
+                ];
+            }
+        }
 
         $isAgent = in_array((string) $actor->rol, ['Funcionario', 'Administrador'], true);
 
@@ -463,6 +507,7 @@ class TicketController extends Controller
             'content' => $message->contenido,
             'timestamp' => $message->fecha_hora,
             'agentName' => $isAgent ? ($actor->nombre_completo ?? 'Agente de Soporte') : null,
+            'attachments' => $attachments,
         ], 201);
     }
 
@@ -630,6 +675,146 @@ class TicketController extends Controller
                 'date' => (string) ($row->fecha_reporte ?? now()),
             ];
         })->values());
+    }
+
+    public function reportsStats()
+    {
+        $monthNames = [
+            1 => 'Ene',
+            2 => 'Feb',
+            3 => 'Mar',
+            4 => 'Abr',
+            5 => 'May',
+            6 => 'Jun',
+            7 => 'Jul',
+            8 => 'Ago',
+            9 => 'Sep',
+            10 => 'Oct',
+            11 => 'Nov',
+            12 => 'Dic',
+        ];
+
+        $now = Carbon::now();
+        $firstMonth = $now->copy()->startOfMonth()->subMonths(5);
+
+        $months = [];
+        for ($i = 0; $i < 6; $i++) {
+            $cursor = $firstMonth->copy()->addMonths($i);
+            $months[] = [
+                'key' => $cursor->format('Y-m'),
+                'month' => $monthNames[(int) $cursor->format('n')] ?? $cursor->format('M'),
+            ];
+        }
+
+        $monthRows = DB::table('tickets')
+            ->selectRaw("DATE_FORMAT(fecha_creacion, '%Y-%m') as ym")
+            ->selectRaw('COUNT(*) as tickets')
+            ->selectRaw("SUM(CASE WHEN estado_ticket IN ('Resuelto', 'Cerrado') THEN 1 ELSE 0 END) as resolved")
+            ->whereNotNull('fecha_creacion')
+            ->where('fecha_creacion', '>=', $firstMonth->toDateTimeString())
+            ->groupBy('ym')
+            ->get()
+            ->keyBy('ym');
+
+        $byMonth = collect($months)->map(function (array $m) use ($monthRows) {
+            $row = $monthRows->get($m['key']);
+
+            return [
+                'month' => $m['month'],
+                'tickets' => (int) ($row->tickets ?? 0),
+                'resolved' => (int) ($row->resolved ?? 0),
+            ];
+        })->values();
+
+        $totalTickets = (int) $byMonth->sum('tickets');
+        $resolvedTickets = (int) $byMonth->sum('resolved');
+        $resolutionRate = $totalTickets > 0
+            ? (int) round(($resolvedTickets / $totalTickets) * 100)
+            : 0;
+
+        $areaRows = DB::table('tickets as t')
+            ->join('areas as a', 'a.ID_area', '=', 't.ID_area')
+            ->selectRaw('a.nombre_area as name, COUNT(*) as total')
+            ->whereNotNull('t.fecha_creacion')
+            ->where('t.fecha_creacion', '>=', $firstMonth->toDateTimeString())
+            ->groupBy('a.ID_area', 'a.nombre_area')
+            ->orderByDesc('total')
+            ->get();
+
+        $areaTotal = (int) $areaRows->sum('total');
+        $byArea = $areaRows->map(function ($row) use ($areaTotal) {
+            $percentage = $areaTotal > 0
+                ? (int) round(((int) $row->total * 100) / $areaTotal)
+                : 0;
+
+            return [
+                'name' => (string) $row->name,
+                'value' => $percentage,
+            ];
+        })->values();
+
+        $avgResolutionMinutes = DB::table('tickets')
+            ->whereIn('estado_ticket', ['Resuelto', 'Cerrado'])
+            ->whereNotNull('fecha_creacion')
+            ->whereNotNull('fecha_actualizacion')
+            ->where('fecha_creacion', '>=', $firstMonth->toDateTimeString())
+            ->selectRaw('AVG(TIMESTAMPDIFF(MINUTE, fecha_creacion, fecha_actualizacion)) as avg_minutes')
+            ->value('avg_minutes');
+
+        $avgResolutionHours = $avgResolutionMinutes !== null
+            ? round(((float) $avgResolutionMinutes) / 60, 1)
+            : 0.0;
+
+        $firstWeek = $now->copy()->startOfWeek()->subWeeks(5);
+        $weekStarts = [];
+        for ($i = 0; $i < 6; $i++) {
+            $weekStarts[] = $firstWeek->copy()->addWeeks($i);
+        }
+
+        $ticketWeeks = DB::table('tickets')
+            ->selectRaw('YEARWEEK(fecha_creacion, 1) as yw, COUNT(*) as total')
+            ->whereNotNull('fecha_creacion')
+            ->where('fecha_creacion', '>=', $firstWeek->toDateTimeString())
+            ->groupBy('yw')
+            ->get()
+            ->keyBy('yw');
+
+        $misroutedWeeks = DB::table('reportes_ticket')
+            ->selectRaw('YEARWEEK(fecha_reporte, 1) as yw, COUNT(*) as total')
+            ->whereNotNull('fecha_reporte')
+            ->where('fecha_reporte', '>=', $firstWeek->toDateTimeString())
+            ->groupBy('yw')
+            ->get()
+            ->keyBy('yw');
+
+        $aiAccuracy = collect($weekStarts)->values()->map(function (Carbon $weekStart, int $index) use ($ticketWeeks, $misroutedWeeks) {
+            $weekKey = (int) $weekStart->format('oW');
+            $tickets = (int) ($ticketWeeks->get($weekKey)->total ?? 0);
+            $misrouted = (int) ($misroutedWeeks->get($weekKey)->total ?? 0);
+
+            $accuracy = $tickets > 0
+                ? (int) round(max(0, min(100, 100 - (($misrouted / $tickets) * 100))))
+                : 100;
+
+            return [
+                'week' => 'S' . ($index + 1),
+                'accuracy' => $accuracy,
+            ];
+        })->values();
+
+        $lastAccuracy = (int) ($aiAccuracy->last()['accuracy'] ?? 0);
+
+        return response()->json([
+            'byMonth' => $byMonth,
+            'byArea' => $byArea,
+            'aiAccuracy' => $aiAccuracy,
+            'kpis' => [
+                'totalTickets' => $totalTickets,
+                'resolutionRate' => $resolutionRate,
+                'aiAccuracy' => $lastAccuracy,
+                'avgResolutionHours' => $avgResolutionHours,
+            ],
+        ]);
     }
 
     public function deleteMisroutedReport(string $reportId)

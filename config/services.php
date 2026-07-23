@@ -35,4 +35,10 @@ return [
         ],
     ],
 
+    'botpress' => [
+        'webhook_url' => env('BOTPRESS_WEBHOOK_URL', ''),
+        'chat_url' => env('BOTPRESS_CHAT_URL', ''),
+        'token' => env('BOTPRESS_TOKEN'),
+    ],
+
 ];
